@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>京东商城 - 首页</title>
+<style>
+  body { margin: 0; font: 14px/1.4 sans-serif; }
+  section { padding: 8px; border-bottom: 1px solid #eee; }
+  #nowrap { width: 120px; white-space: nowrap; overflow: hidden; font-size: 16px; }
+  #nowrap-ellipsis { width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 16px; }
+  .imgbox { position: relative; width: 300px; margin: 6px 0; }
+  .static-box { width: 300px; margin: 6px 0; padding: 7px; }
+  #cover, #cover-tl, #contain { width: 300px; height: 100px; display: block; }
+  #cover { object-fit: cover; padding: 4px; border: 3px solid #333; box-sizing: content-box; }
+  #cover-tl { object-fit: cover; object-position: 0 0; }
+  #contain { object-fit: contain; background: #ddd; }
+  .swiper { width: 300px; overflow: hidden; }
+  .swiper-wrapper { display: flex; transform: translate3d(-100px, 0, 0); }
+  .swiper-slide { flex: 0 0 200px; }
+  .swiper-slide img { width: 200px; height: 100px; display: block; }
+  #banner { width: 320px; height: 120px; background: url(/img/400x150.png) center / cover no-repeat; }
+</style>
+</head>
+<body>
+<section id="attrs">
+  <input id="search" type="search" placeholder="搜索商品">
+  <img id="alt-img" alt="商品图片" title="点击查看大图" src="/img/40x20.png" width="40" height="20">
+  <a id="aria" aria-label="购物车" href="#">🛒</a>
+  <div id="dph" data-placeholder="请输入地址"></div>
+  <input id="typed" type="text" value="">
+</section>
+<section id="buttons">
+  <input id="btn" type="button" value="加入购物车">
+  <input id="submit" type="submit" value="立即购买">
+  <input id="named-submit" type="submit" name="act" value="提交订单">
+  <button id="button" value="内部值">去结算</button>
+</section>
+<section id="options">
+  <select id="sel"><option value="1">请选择颜色</option><option value="2">红色</option><option value="3">黑色</option></select>
+</section>
+<section id="skip">
+  <textarea id="ta">用户输入的内容</textarea>
+  <div id="ce" contenteditable="true">可编辑区域</div>
+  <code id="code">代码片段</code>
+  <span id="notr" translate="no">不翻译</span>
+</section>
+<section id="rerender">
+  <span id="ticker">  第一条消息  </span>
+  <div id="react-root"><p class="goods-title">华为（HUAWEI）Mate 60 Pro 12GB+512GB 雅丹黑</p></div>
+</section>
+<section id="fit">
+  <div id="nowrap"><span id="nowrap-span">限时秒杀超低价格抢购</span></div>
+  <div id="nowrap-ellipsis"><span id="ellipsis-span">限时秒杀价</span></div>
+</section>
+<section id="images">
+  <div class="imgbox"><img id="lazy" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-src="/img/300x150.png" width="300" height="150"></div>
+  <div class="imgbox"><img id="cover" src="/img/200x200.png"></div>
+  <div class="static-box"><img id="cover-tl" src="/img/200x200.png"></div>
+  <div class="imgbox"><img id="contain" src="/img/200x200.png"></div>
+  <div class="swiper"><div class="swiper-wrapper">
+    <div class="swiper-slide"><img id="slide1" src="/img/200x100.png"></div>
+    <div class="swiper-slide"><img id="slide2" src="/img/201x100.png"></div>
+  </div></div>
+  <div id="banner"></div>
+  <img id="tiny" src="/img/60x30.png" width="60" height="30">
+</section>
+<section id="shadow-host"></section>
+<section id="frames">
+  <iframe id="frame" src="/frame.html" width="300" height="80"></iframe>
+</section>
+<section id="nulls"><span id="null-text">无法翻译的文本</span></section>
+<section id="spa"></section>
+<script>
+  // React-like re-render: the framework overwrites the text node with new Chinese.
+  var msgs = ['第一条消息', '第二条消息', '第三条消息'];
+  var i = 0;
+  var tickerText = document.getElementById('ticker').firstChild;
+  window.__ticks = 0;
+  setInterval(function () { i = (i + 1) % msgs.length; tickerText.nodeValue = '  ' + msgs[i] + '  '; window.__ticks++; }, 150);
+  // Full subtree replacement (like a list re-render)
+  setTimeout(function () {
+    document.getElementById('react-root').innerHTML = '<p class="goods-title">小米14 Ultra 16GB+1TB 白色 徕卡光学</p><p>已售1万+</p>';
+  }, 400);
+  // Lazy image: swap data-src -> src
+  setTimeout(function () { var im = document.getElementById('lazy'); im.src = im.getAttribute('data-src'); }, 500);
+  // Shadow DOM
+  var root = document.getElementById('shadow-host').attachShadow({ mode: 'open' });
+  root.innerHTML = '<span id="sh">店铺首页</span>';
+</script>
+</body>
+</html>

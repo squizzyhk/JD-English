@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_cat_translation">
+
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="enabled"
+            app:summaryOff="@string/pref_enabled_summary_off"
+            app:summaryOn="@string/pref_enabled_summary_on"
+            app:title="@string/pref_enabled_title" />
+
+        <ListPreference
+            app:defaultValue="mlkit"
+            app:dialogTitle="@string/pref_engine_dialog_title"
+            app:entries="@array/engine_entries"
+            app:entryValues="@array/engine_values"
+            app:iconSpaceReserved="false"
+            app:key="engine"
+            app:title="@string/pref_engine_title"
+            app:useSimpleSummaryProvider="true" />
+
+        <EditTextPreference
+            app:dialogMessage="@string/pref_claude_key_dialog_message"
+            app:iconSpaceReserved="false"
+            app:key="claude_api_key"
+            app:title="@string/pref_claude_key_title" />
+
+        <EditTextPreference
+            app:defaultValue="claude-haiku-5-5"
+            app:iconSpaceReserved="false"
+            app:key="claude_model"
+            app:title="@string/pref_claude_model_title"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_cat_images">
+
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="translate_images"
+            app:summary="@string/pref_images_summary"
+            app:title="@string/pref_images_title" />
+
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:dependency="translate_images"
+            app:iconSpaceReserved="false"
+            app:key="images_wifi_only"
+            app:summary="@string/pref_images_wifi_summary"
+            app:title="@string/pref_images_wifi_title" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_cat_engine">
+
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="engine_status"
+            app:persistent="false"
+            app:selectable="false"
+            app:summary="@string/pref_status_unknown"
+            app:title="@string/pref_status_title" />
+
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="download_model"
+            app:persistent="false"
+            app:summary="@string/pref_download_summary"
+            app:title="@string/pref_download_title" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_cat_data">
+
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="clear_cache"
+            app:persistent="false"
+            app:summary="@string/pref_clear_cache_summary"
+            app:title="@string/pref_clear_cache_title" />
+
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="clear_cookies"
+            app:persistent="false"
+            app:summary="@string/pref_clear_cookies_summary"
+            app:title="@string/pref_clear_cookies_title" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_cat_about">
+
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="about"
+            app:persistent="false"
+            app:selectable="false"
+            app:singleLineTitle="false"
+            app:summary="@string/pref_about_summary"
+            app:title="@string/pref_about_title" />
+
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="version"
+            app:persistent="false"
+            app:selectable="false"
+            app:title="@string/pref_version_title" />
+    </PreferenceCategory>
+</PreferenceScreen>

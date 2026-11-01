@@ -1,0 +1,10 @@
+<resources>
+    <string-array name="engine_entries">
+        <item>@string/engine_mlkit</item>
+        <item>@string/engine_claude</item>
+    </string-array>
+    <string-array name="engine_values" translatable="false">
+        <item>mlkit</item>
+        <item>claude</item>
+    </string-array>
+</resources>

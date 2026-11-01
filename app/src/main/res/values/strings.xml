@@ -1,3 +1,93 @@
 <resources>
     <string name="app_name">JD English</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_categories">Categories</string>
+    <string name="nav_cart">Cart</string>
+    <string name="nav_my_jd">My JD</string>
+
+    <!-- Toolbar / overflow -->
+    <string name="action_back">Back</string>
+    <string name="action_search">Search</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="action_copy_link">Copy Link</string>
+    <string name="action_share">Share Link</string>
+    <string name="action_open_in_browser">Open in Browser</string>
+    <string name="action_settings">Settings</string>
+    <string name="lang_toggle_en">EN</string>
+    <string name="lang_toggle_zh">中</string>
+    <string name="lang_toggle_desc_on">Showing English. Tap to show the original Chinese.</string>
+    <string name="lang_toggle_desc_off">Showing original Chinese. Tap to translate to English.</string>
+    <string name="toast_showing_original">Showing original Chinese</string>
+    <string name="toast_showing_english">Translating to English</string>
+
+    <!-- Search -->
+    <string name="search_hint">Search JD in English</string>
+    <string name="search_clear">Clear search</string>
+
+    <!-- Messages -->
+    <string name="link_copied">Link copied</string>
+    <string name="no_app_to_open">No app found to open this link</string>
+    <string name="choose_browser">Open with</string>
+    <string name="share_via">Share link via</string>
+    <string name="no_file_picker">No app available to choose files</string>
+    <string name="page_crashed">The page stopped responding and was reloaded</string>
+    <string name="dialog_title_site_says">%1$s says</string>
+    <string name="dialog_title_page_says">This page says</string>
+    <string name="ok">OK</string>
+    <string name="cancel">Cancel</string>
+
+    <!-- Error view -->
+    <string name="error_title_offline">You\'re offline</string>
+    <string name="error_msg_offline">Check your internet connection and try again.</string>
+    <string name="error_title_timeout">This is taking too long</string>
+    <string name="error_msg_timeout">JD didn\'t respond in time. Please try again.</string>
+    <string name="error_title_generic">Page couldn\'t be loaded</string>
+    <string name="error_msg_generic">Something went wrong while loading this page. Please try again.</string>
+    <string name="error_details">Error: %1$s</string>
+    <string name="retry">Retry</string>
+    <string name="go_home">Go to Home</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="pref_cat_translation">Translation</string>
+    <string name="pref_enabled_title">Translate pages</string>
+    <string name="pref_enabled_summary_on">JD pages are shown in English</string>
+    <string name="pref_enabled_summary_off">JD pages are shown in the original Chinese</string>
+    <string name="pref_engine_title">Translation engine</string>
+    <string name="pref_engine_dialog_title">Choose a translation engine</string>
+    <string name="engine_mlkit">On-device (free, offline)</string>
+    <string name="engine_claude">Claude AI (best quality, needs API key)</string>
+    <string name="pref_claude_key_title">Claude API key</string>
+    <string name="pref_claude_key_dialog_message">Paste your Anthropic API key. It is stored only on this device and sent only to Anthropic.</string>
+    <string name="pref_claude_key_not_set">Not set. Required to use Claude AI.</string>
+    <string name="pref_claude_key_set">Saved (%1$s)</string>
+    <string name="pref_claude_model_title">Claude model</string>
+    <string name="pref_cat_images">Images</string>
+    <string name="pref_images_title">Translate text in images</string>
+    <string name="pref_images_summary">Reads Chinese text in banners and product photos and overlays English</string>
+    <string name="pref_images_wifi_title">Only on Wi-Fi</string>
+    <string name="pref_images_wifi_summary">Skip image translation on mobile data to save data</string>
+    <string name="pref_cat_engine">Offline model</string>
+    <string name="pref_status_title">Status</string>
+    <string name="pref_status_unknown">Checking…</string>
+    <string name="pref_download_title">Download offline model now</string>
+    <string name="pref_download_summary">About 30 MB. Lets you translate without an internet connection.</string>
+    <string name="toast_download_started">Downloading the offline translation model…</string>
+    <string name="pref_cat_data">Data &amp; privacy</string>
+    <string name="pref_clear_cache_title">Clear translation cache</string>
+    <string name="pref_clear_cache_summary">Delete saved translations. Pages will be translated again as you browse.</string>
+    <string name="pref_clear_cache_confirm">Clear all saved translations?</string>
+    <string name="toast_cache_cleared">Translation cache cleared</string>
+    <string name="pref_clear_cookies_title">Clear cookies / sign out</string>
+    <string name="pref_clear_cookies_summary">Signs you out of JD and deletes cookies and site data</string>
+    <string name="pref_clear_cookies_confirm">Sign out of JD and delete all cookies and site data?</string>
+    <string name="toast_cookies_cleared">Signed out. Cookies and site data cleared.</string>
+    <string name="clear">Clear</string>
+    <string name="sign_out">Sign Out</string>
+    <string name="pref_cat_about">About</string>
+    <string name="pref_about_title">About JD English</string>
+    <string name="pref_about_summary">JD English is an unofficial browser that translates JD\'s public mobile website (m.jd.com) into English on your device. It is not affiliated with, endorsed by, or sponsored by JD.com. Orders, payments, and accounts are handled by JD directly.</string>
+    <string name="pref_version_title">Version</string>
 </resources>

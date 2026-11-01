@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="match_parent"
+    android:paddingStart="4dp"
+    android:paddingEnd="4dp">
+
+    <TextView
+        android:id="@+id/lang_toggle"
+        android:layout_width="wrap_content"
+        android:layout_height="28dp"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_lang_toggle"
+        android:focusable="true"
+        android:clickable="true"
+        android:gravity="center"
+        android:minWidth="48dp"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:text="@string/lang_toggle_en"
+        android:textColor="@color/jd_red"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+</FrameLayout>

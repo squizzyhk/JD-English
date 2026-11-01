@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.JDEnglish" parent="Base.Theme.JDEnglish">
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

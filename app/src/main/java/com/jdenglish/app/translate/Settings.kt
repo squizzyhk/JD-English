@@ -19,7 +19,11 @@ class Settings(context: Context) {
 
     val claudeKey: String get() = prefs.getString(KEY_CLAUDE_KEY, "")?.trim().orEmpty()
 
-    val claudeModel: String get() = prefs.getString(KEY_CLAUDE_MODEL, DEFAULT_CLAUDE_MODEL) ?: DEFAULT_CLAUDE_MODEL
+    val claudeModel: String
+        get() = prefs.getString(KEY_CLAUDE_MODEL, DEFAULT_CLAUDE_MODEL)?.trim()?.ifEmpty { null } ?: DEFAULT_CLAUDE_MODEL
+
+    /** True when the Claude engine is selected and an API key is present. */
+    val claudeReady: Boolean get() = engine == "claude" && claudeKey.isNotEmpty()
 
     /** Only translate images while on Wi-Fi/unmetered? (OCR runs locally; this only limits image re-downloads) */
     val imagesWifiOnly: Boolean get() = prefs.getBoolean(KEY_IMAGES_WIFI_ONLY, false)

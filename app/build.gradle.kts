@@ -40,6 +40,16 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { buildConfig = true }
+
+    // The offline Chinese OCR model ships native code; one APK per CPU type keeps size sane.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = false
+        }
+    }
 }
 
 dependencies {

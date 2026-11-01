@@ -31,6 +31,19 @@ class EngineLogicTest {
         assertEquals("JD Direct genuine guarantee JD Logistics delivery", restored)
     }
 
+    @Test fun protectSkipsTermInsideOtherWords() {
+        val g = mapOf("京东" to "JD", "金条" to "JD Cash Loan")
+        val terms = listOf("京东", "金条")
+        assertNull(EngineLogic.protect("北京东城区配送", terms) { g[it] })
+        assertNull(EngineLogic.protect("上海南京东路店", terms) { g[it] })
+        assertNull(EngineLogic.protect("投资金条 999足金 10g", terms) { g[it] })
+        val p = EngineLogic.protect("京东金条借款 北京东站", terms) { g[it] }!!
+        assertEquals(2, p.tokens.size)
+        assertTrue(p.text.contains("北京东站"))
+        assertFalse(EngineLogic.containsTerm("北京东城区", "京东"))
+        assertTrue(EngineLogic.containsTerm("北京东城区 京东自营", "京东"))
+    }
+
     @Test fun restoreFailsIfPlaceholderLost() {
         val p = EngineLogic.protect("京东自营正品", listOf("京东自营")) { gloss[it] }!!
         assertNull(EngineLogic.restore("Genuine product", p))

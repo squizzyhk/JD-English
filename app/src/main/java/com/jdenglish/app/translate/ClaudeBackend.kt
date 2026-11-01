@@ -73,14 +73,20 @@ class ClaudeBackend(
         return out.toList()
     }
 
-    /** One request; on a malformed/mismatched response, retries once with halves. */
+    /**
+     * One request; on a malformed/mismatched response, retries once with halves (in parallel).
+     * Transport/HTTP failures and refusals are not split: they return nulls at once so the
+     * engine can fall back to ML Kit without minutes of retries.
+     */
     private suspend fun translateChunk(chunk: List<TextItem>, allowSplit: Boolean): List<String?> {
+        var gotResponse = false
         val result = try {
             val hints = ClaudeProtocol.glossaryHints(chunk.map { it.text }, glossary()?.entries().orEmpty(), MAX_HINTS)
             val user = ClaudeProtocol.buildUserMessage(chunk, hints)
             val chars = chunk.sumOf { it.text.length }
             val maxTokens = (1024 + chars * 4).coerceAtMost(16000)
             val text = call(SYSTEM_PROMPT, user, maxTokens)
+            gotResponse = text != null
             text?.let { ClaudeProtocol.parseArray(it) }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -99,10 +105,15 @@ class ClaudeBackend(
                 if (v.isNullOrEmpty() || (Cjk.hasHan(v) && v == chunk[i].text.trim())) null else v
             }
         }
+        if (!gotResponse) return chunk.map { null }
         if (allowSplit && chunk.size > 1) {
             Log.w(TAG, "length mismatch (${result?.size} vs ${chunk.size}); retrying in halves")
             val mid = chunk.size / 2
-            return translateChunk(chunk.subList(0, mid), false) + translateChunk(chunk.subList(mid, chunk.size), false)
+            return coroutineScope {
+                val a = async { translateChunk(chunk.subList(0, mid), false) }
+                val b = async { translateChunk(chunk.subList(mid, chunk.size), false) }
+                a.await() + b.await()
+            }
         }
         if (result != null && chunk.size == 1 && result.isNotEmpty()) return listOf(result.first()?.trim()?.ifEmpty { null })
         return chunk.map { null }
@@ -144,7 +155,8 @@ class ClaudeBackend(
                 }
             } catch (e: IOException) {
                 lastError = "Network error contacting Claude: ${e.message ?: e.javaClass.simpleName}"
-                if (attempt == 1) { delay(1500); continue }
+                // A timeout already cost up to readTimeout; don't spend that twice.
+                if (attempt == 1 && e !is java.io.InterruptedIOException) { delay(1500); continue }
                 throw e
             }
             when {
@@ -204,9 +216,10 @@ class ClaudeBackend(
         private val defaultClient: OkHttpClient by lazy {
             OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
+                // Non-streaming: no bytes arrive until the whole (up to 16k-token) reply is done.
+                .readTimeout(120, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
-                .callTimeout(90, TimeUnit.SECONDS)
+                .callTimeout(150, TimeUnit.SECONDS)
                 .retryOnConnectionFailure(true)
                 .build()
         }
@@ -268,7 +281,7 @@ internal object ClaudeProtocol {
         val hits = ArrayList<Pair<String, String>>()
         for ((zh, en) in entries) {
             if (zh.length < 2 || !Cjk.hasHan(zh)) continue
-            if (joined.contains(zh)) hits.add(zh to en)
+            if (EngineLogic.containsTerm(joined, zh)) hits.add(zh to en)
         }
         // Prefer longer (more specific) terms when capping.
         hits.sortWith(compareByDescending<Pair<String, String>> { it.first.length }.thenBy { it.first })

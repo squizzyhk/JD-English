@@ -37,15 +37,28 @@ class TranslationEngine private constructor(private val context: Context) {
     private val memory = LruCache<String, String>(MEMORY_ENTRIES)
 
     /** Translate many strings (same order out). null = leave original. Never throws (except cancellation). */
-    suspend fun translate(items: List<TextItem>): List<String?> {
-        if (items.isEmpty()) return emptyList()
+    suspend fun translate(items: List<TextItem>): List<String?> = translateWithInfo(items).values
+
+    /**
+     * Result of [translateWithInfo].
+     * @property fellBack the Claude engine was selected and usable but some strings came from ML Kit
+     *   instead (a Claude failure), so the result shouldn't be cached as Claude output.
+     * @property backendUnavailable some strings are null because the last backend tier couldn't run
+     *   (e.g. the ML Kit model is still downloading); retrying later may succeed. When false, a
+     *   null means the backend answered with something unusable (retrying won't help).
+     */
+    class Outcome(val values: List<String?>, val fellBack: Boolean, val backendUnavailable: Boolean)
+
+    /** Like [translate], plus how the result was produced (used by OCR result caching). */
+    suspend fun translateWithInfo(items: List<TextItem>): Outcome {
+        if (items.isEmpty()) return Outcome(emptyList(), fellBack = false, backendUnavailable = false)
         return try {
             translateImpl(items)
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
             Log.e(TAG, "translate failed", t)
-            items.map { null }
+            Outcome(items.map { null }, fellBack = false, backendUnavailable = true)
         }
     }
 
@@ -54,7 +67,7 @@ class TranslationEngine private constructor(private val context: Context) {
         var result: String? = null
     }
 
-    private suspend fun translateImpl(items: List<TextItem>): List<String?> {
+    private suspend fun translateImpl(items: List<TextItem>): Outcome {
         val g = glossary()
         val out = arrayOfNulls<String>(items.size)
         val pending = LinkedHashMap<String, Pending>()
@@ -68,22 +81,29 @@ class TranslationEngine private constructor(private val context: Context) {
             if (local != null) {
                 out[i] = EngineLogic.keepOuterSpace(raw, local)
             } else {
-                pending.getOrPut(norm) { Pending(norm, item.ctx) }.indices.add(i)
+                // Claude's output depends on ctx (title vs ui vs image), so dedupe per ctx.
+                pending.getOrPut(norm + "\u0001" + item.ctx) { Pending(norm, item.ctx) }.indices.add(i)
             }
         }
-        if (pending.isEmpty()) return out.toList()
+        if (pending.isEmpty()) return Outcome(out.toList(), fellBack = false, backendUnavailable = false)
 
         val useClaude = settings.engine == ClaudeBackend.ID && claude.hasKey
         var unresolved: List<Pending> = pending.values.toList()
+        var fellBack = false
         if (useClaude) {
-            unresolved = runTier(claude.id, unresolved) { batch ->
+            // Cache Claude output per model and ctx: switching model refreshes, and a ctx="title"
+            // rendering isn't reused for ctx="ui" (ML Kit ignores ctx, so its key is the text alone).
+            val claudeId = claude.id + ":" + settings.claudeModel
+            unresolved = runTier(claudeId, unresolved, { it.ctx + "\u0001" + it.norm }) { batch ->
                 claude.translate(batch.map { TextItem(it.norm, it.ctx) })
             }
+            fellBack = unresolved.isNotEmpty()
         }
         if (unresolved.isNotEmpty()) {
             // Default engine, or fallback when Claude failed / has no key.
-            unresolved = runTier(mlKit.id, unresolved) { batch -> translateWithMlKit(batch, g) }
+            unresolved = runTier(mlKit.id, unresolved, { it.norm }) { batch -> translateWithMlKit(batch, g) }
         }
+        val backendUnavailable = unresolved.isNotEmpty() && !mlKit.isReadyNow
 
         for (p in pending.values) {
             val v = p.result ?: continue
@@ -92,30 +112,34 @@ class TranslationEngine private constructor(private val context: Context) {
                 out[i] = EngineLogic.keepOuterSpace(item.text, PostEditor.finish(v, item.ctx, item.text))
             }
         }
-        return out.toList()
+        return Outcome(out.toList(), fellBack, backendUnavailable)
     }
 
-    /** Memory -> SQLite -> backend for one engine id. Returns the entries still unresolved. */
+    /**
+     * Memory -> SQLite -> backend for one engine id. [keyOf] is the cache key of an entry within
+     * that engine. Returns the entries still unresolved.
+     */
     private suspend fun runTier(
         engineId: String,
         input: List<Pending>,
+        keyOf: (Pending) -> String,
         backend: suspend (List<Pending>) -> List<String?>,
     ): List<Pending> {
         var misses = ArrayList<Pending>()
         for (p in input) {
-            val hit = memory.get(memKey(engineId, p.norm))
+            val hit = memory.get(memKey(engineId, keyOf(p)))
             if (hit != null) p.result = hit else misses.add(p)
         }
         if (misses.isEmpty()) return emptyList()
 
-        val dbHits = cache.getAll(engineId, misses.map { it.norm })
+        val dbHits = cache.getAll(engineId, misses.map(keyOf))
         if (dbHits.isNotEmpty()) {
             val still = ArrayList<Pending>()
             for (p in misses) {
-                val hit = dbHits[p.norm]
+                val hit = dbHits[keyOf(p)]
                 if (hit != null) {
                     p.result = hit
-                    memory.put(memKey(engineId, p.norm), hit)
+                    memory.put(memKey(engineId, keyOf(p)), hit)
                 } else still.add(p)
             }
             misses = still
@@ -137,8 +161,8 @@ class TranslationEngine private constructor(private val context: Context) {
             val cleaned = raw?.let { PostEditor.clean(it) }?.takeIf { EngineLogic.isUsable(p.norm, it) }
             if (cleaned != null) {
                 p.result = cleaned
-                memory.put(memKey(engineId, p.norm), cleaned)
-                toStore[p.norm] = cleaned
+                memory.put(memKey(engineId, keyOf(p)), cleaned)
+                toStore[keyOf(p)] = cleaned
             } else failed.add(p)
         }
         if (toStore.isNotEmpty()) cache.putAll(engineId, toStore)
@@ -210,20 +234,33 @@ class TranslationEngine private constructor(private val context: Context) {
         }
     }
 
-    /** Kick off glossary load + model download in the background. Safe to call repeatedly. */
+    /**
+     * Process start: glossary load + model download in the background. Only the first call does
+     * anything; use [downloadModel] for an explicit (repeatable) download request.
+     */
     fun warmUp() {
         if (!warmedUp.compareAndSet(false, true)) return
         scope.launch {
             try {
                 glossary()
                 mlKit.refreshDownloadedState()
-                mlKit.ensureReady()
+                // Claude users only need ML Kit as a fallback; it downloads on first fallback use.
+                if (!(settings.engine == ClaudeBackend.ID && claude.hasKey)) mlKit.ensureReady()
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
                 Log.w(TAG, "warmUp failed", t)
             }
         }
+    }
+
+    /**
+     * Explicit download request (Settings "Download offline model", engine change): skips the
+     * failure back-off and starts the ML Kit model download in the background. Repeatable.
+     */
+    fun downloadModel() {
+        scope.launch { glossary() }
+        mlKit.downloadNow()
     }
 
     /** Drop the persistent cache (Settings -> Clear cache). */
@@ -286,17 +323,53 @@ internal object EngineLogic {
         val tokens = LinkedHashMap<String, String>()
         for (term in terms) {
             if (tokens.size >= MAX_TOKENS) break
-            if (term.length < 2 || !s.contains(term)) continue
+            if (term.length < 2) continue
+            val at = termOccurrences(s, term)
+            if (at.isEmpty()) continue
             val en = lookup(term) ?: continue
             val token = "QZX" + ('A' + tokens.size)
             tokens[token] = en
-            s = s.replace(term, " $token ")
+            val sb = StringBuilder(s.length + at.size * 6)
+            var last = 0
+            for (i in at) {
+                sb.append(s, last, i).append(" ").append(token).append(" ")
+                last = i + term.length
+            }
+            s = sb.append(s, last, s.length).toString()
         }
         if (tokens.isEmpty()) return null
         s = MULTI_SPACE.replace(s, " ").trim()
         if (!Cjk.hasHan(s)) return null // nothing left for MT; caller translates normally
         return Protected(s, tokens)
     }
+
+    /**
+     * Contexts in which a glossary term's characters are really part of another word, e.g.
+     * 京东 inside 北京东城区 / 南京东路 / 北京东站, or 金条 in 投资金条 (gold bars, not JD's loan).
+     * A match of the regex (exactly the term, with look-arounds) is not an occurrence of the term.
+     */
+    private val TERM_EXCLUSIONS: Map<String, Regex> = mapOf(
+        "京东" to Regex("""(?<=[北南])京东|京东(?=[城路站街区])"""),
+        "金条" to Regex("""(?<=[资黄足纯金银])金条|金条(?=\s*[0-9０-９克gG])"""),
+    )
+
+    /** Start indexes of real (non-overlapping) occurrences of [term] in [text]. */
+    fun termOccurrences(text: String, term: String): List<Int> {
+        if (term.isEmpty()) return emptyList()
+        var i = text.indexOf(term)
+        if (i < 0) return emptyList()
+        val excluded = TERM_EXCLUSIONS[term]?.findAll(text)?.map { it.range.first }?.toHashSet()
+        val out = ArrayList<Int>(2)
+        while (i >= 0) {
+            if (excluded == null || i !in excluded) out.add(i)
+            i = text.indexOf(term, i + term.length)
+        }
+        return out
+    }
+
+    /** True if [text] contains a real occurrence of [term] (see [termOccurrences]). */
+    fun containsTerm(text: String, term: String): Boolean =
+        text.contains(term) && termOccurrences(text, term).isNotEmpty()
 
     /** Puts English terms back; null if any placeholder went missing (caller retries unprotected). */
     fun restore(translated: String, p: Protected): String? {

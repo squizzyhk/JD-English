@@ -5,7 +5,6 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -25,8 +24,6 @@ import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The `JDTNative` JavaScript interface (see docs/ARCHITECTURE.md, "Bridge contract").
@@ -34,11 +31,14 @@ import java.util.concurrent.atomic.AtomicLong
  * All @JavascriptInterface methods are invoked on a WebView-private background thread;
  * results are delivered back on the main thread with evaluateJavascript.
  *
- * Page-change handling: [onPageStarted] bumps a generation counter. Work belonging to a
- * previous page is cancelled and its results are dropped, so stale request ids can never
- * be applied to the new document. Because document-start scripts of the new page may call
- * in slightly *before* onPageStarted reaches the main thread, requests that arrived within
- * [GRACE_MS] of the bump are treated as belonging to the new page.
+ * Page-change handling: results are always delivered. Request ids carry a random
+ * per-document nonce (the top frame's FRAME_ID, see docs/ARCHITECTURE.md), so a late result
+ * for an old document never matches an id on the new one (the page ignores unknown ids).
+ * Cancelling old work only saves effort, and is decided by nonce, never by timing: the new
+ * page's document-start script can call in before onPageStarted reaches the main thread.
+ * [onPageStarted] marks the documents with work in flight as suspects; the first request
+ * that arrives afterwards identifies the current document, and suspects other than it are
+ * cancelled. A document first seen after the bump is never cancelled.
  */
 class TranslatorBridge(
     context: Context,
@@ -60,15 +60,15 @@ class TranslatorBridge(
     private val imageSlots = Semaphore(MAX_IMAGE_JOBS)
     private val batchSlots = Semaphore(MAX_BATCH_JOBS)
 
-    private val generation = AtomicInteger(0)
-    private val lastBumpAt = AtomicLong(0L)
-    private val jobs = ConcurrentHashMap<Job, Tag>()
+    /** job -> document nonce of the request it serves. */
+    private val jobs = ConcurrentHashMap<Job, String>()
+    private val suspectLock = Any()
+    private val suspects = HashSet<String>()
+    @Volatile private var hasSuspects = false
 
     @Volatile private var destroyed = false
     @Volatile private var pageUrl: String? = null
     @Volatile private var userAgent: String? = null
-
-    private data class Tag(val gen: Int, val createdAt: Long)
 
     // ---------------------------------------------------------------- native-side API (main thread)
 
@@ -84,11 +84,9 @@ class TranslatorBridge(
     /** A new document is loading: drop work for the old one. Main thread. */
     fun onPageStarted(url: String?) {
         pageUrl = url
-        val now = SystemClock.uptimeMillis()
-        val newGen = generation.incrementAndGet()
-        lastBumpAt.set(now)
-        for ((job, tag) in jobs) {
-            if (isStale(tag, newGen, now)) job.cancel()
+        synchronized(suspectLock) {
+            suspects.addAll(jobs.values)
+            hasSuspects = suspects.isNotEmpty()
         }
     }
 
@@ -112,20 +110,19 @@ class TranslatorBridge(
     @JavascriptInterface
     fun translateBatch(reqId: String?, json: String?) {
         if (destroyed || reqId == null || reqId.length > MAX_REQ_ID) return
-        val tag = newTag()
+        val doc = noteRequest(reqId)
         val texts = parseBatch(json)
         if (texts == null) {
-            deliverBatch(reqId, tag, JSONObject().put("items", JSONArray()).put("error", "bad request"))
+            deliverBatch(reqId, JSONObject().put("items", JSONArray()).put("error", "bad request"))
             return
         }
         if (texts.isEmpty() || texts.size > MAX_BATCH_ITEMS || !settings.enabled) {
             // Not translated: answer with nulls so the page never waits on us.
-            deliverBatch(reqId, tag, resultJson(texts.size, emptyList()))
+            deliverBatch(reqId, resultJson(texts.size, emptyList()))
             return
         }
-        track(tag) {
+        track(doc) {
             batchSlots.withPermit {
-                if (isStale(tag)) return@withPermit
                 val indexes = ArrayList<Int>(texts.size)
                 val items = ArrayList<TextItem>(texts.size)
                 texts.forEachIndexed { i, (t, c) ->
@@ -144,7 +141,7 @@ class TranslatorBridge(
                 }
                 val out = arrayOfNulls<String>(texts.size)
                 indexes.forEachIndexed { k, i -> out[i] = translated.getOrNull(k) }
-                deliverBatch(reqId, tag, resultJson(texts.size, out.asList()))
+                deliverBatch(reqId, resultJson(texts.size, out.asList()))
             }
         }
     }
@@ -152,24 +149,23 @@ class TranslatorBridge(
     @JavascriptInterface
     fun translateImage(reqId: String?, url: String?) {
         if (destroyed || reqId == null || reqId.length > MAX_REQ_ID) return
-        val tag = newTag()
+        val doc = noteRequest(reqId)
         val u = url?.trim().orEmpty()
         val lower = u.take(8).lowercase()
         val validScheme = lower.startsWith("https://") || lower.startsWith("http://") || lower.startsWith("data:")
         when {
             !settings.enabled || !settings.images -> {
-                deliverImage(reqId, tag, errorJson("disabled")); return
+                deliverImage(reqId, errorJson("disabled")); return
             }
             !validScheme || u.length > MAX_IMAGE_URL_LEN -> {
-                deliverImage(reqId, tag, errorJson("unsupported url")); return
+                deliverImage(reqId, errorJson("unsupported url")); return
             }
             !imagesAllowed() -> {
-                deliverImage(reqId, tag, errorJson("wifi only")); return
+                deliverImage(reqId, errorJson("wifi only")); return
             }
         }
-        track(tag) {
+        track(doc) {
             imageSlots.withPermit {
-                if (isStale(tag)) return@withPermit
                 val result = try {
                     imageTranslator.translateImage(u, pageUrl, userAgent)
                 } catch (e: CancellationException) {
@@ -178,7 +174,7 @@ class TranslatorBridge(
                     Log.w(TAG, "image translation failed", t)
                     errorJson(t.message ?: "failed")
                 }
-                deliverImage(reqId, tag, result)
+                deliverImage(reqId, result)
             }
         }
     }
@@ -198,15 +194,29 @@ class TranslatorBridge(
 
     // ---------------------------------------------------------------- internals
 
-    private fun newTag() = Tag(generation.get(), SystemClock.uptimeMillis())
+    /**
+     * Returns the request's document nonce. If a page change is pending, this request identifies
+     * the current document: cancel work of the other documents that had work in flight then.
+     */
+    private fun noteRequest(reqId: String): String {
+        val doc = docOf(reqId)
+        if (!hasSuspects) return doc
+        val cancel: Set<String>
+        synchronized(suspectLock) {
+            if (suspects.isEmpty()) return doc
+            suspects.remove(doc)
+            cancel = HashSet(suspects)
+            suspects.clear()
+            hasSuspects = false
+        }
+        for ((job, d) in jobs) if (d in cancel) job.cancel()
+        return doc
+    }
 
-    private fun isStale(tag: Tag, currentGen: Int = generation.get(), bumpAt: Long = lastBumpAt.get()): Boolean =
-        tag.gen < currentGen && tag.createdAt < bumpAt - GRACE_MS
-
-    private inline fun track(tag: Tag, crossinline block: suspend () -> Unit) {
+    private inline fun track(doc: String, crossinline block: suspend () -> Unit) {
         if (destroyed) return
         val job = scope.launch { block() }
-        jobs[job] = tag
+        jobs[job] = doc
         job.invokeOnCompletion { jobs.remove(job) }
     }
 
@@ -239,22 +249,35 @@ class TranslatorBridge(
 
     private fun errorJson(msg: String): String = JSONObject().put("error", msg).toString()
 
-    private fun deliverBatch(reqId: String, tag: Tag, result: JSONObject) =
-        deliver("onBatch", reqId, tag, result.toString())
+    private fun deliverBatch(reqId: String, result: JSONObject) =
+        deliver("onBatch", reqId, result.toString())
 
-    private fun deliverImage(reqId: String, tag: Tag, resultJson: String) {
+    private fun deliverImage(reqId: String, resultJson: String) {
         // Validate the payload is a JSON object before handing it to JS as a literal.
         val safe = try { JSONObject(resultJson).toString() } catch (_: Exception) { errorJson("bad result") }
-        deliver("onImage", reqId, tag, safe)
+        deliver("onImage", reqId, safe)
     }
 
-    private fun deliver(fn: String, reqId: String, tag: Tag, json: String) {
+    /** Ready listener target: the model just became available, re-request failed strings/images. */
+    fun retryFailed() {
+        if (destroyed) return
+        main.post {
+            if (destroyed) return@post
+            try {
+                webView.evaluateJavascript(RETRY_JS, null)
+            } catch (t: Throwable) {
+                Log.w(TAG, "evaluateJavascript failed", t)
+            }
+        }
+    }
+
+    private fun deliver(fn: String, reqId: String, json: String) {
         if (destroyed) return
         // U+2028/2029 are legal in JSON but break older JS parsers inside a script literal.
         val payload = json.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
         val js = "window.__jdt&&window.__jdt.$fn(" + JSONObject.quote(reqId) + "," + payload + ")"
         main.post {
-            if (destroyed || isStale(tag)) return@post
+            if (destroyed) return@post
             try {
                 webView.evaluateJavascript(js, null)
             } catch (t: Throwable) {
@@ -288,6 +311,18 @@ class TranslatorBridge(
         private const val MAX_IMAGE_URL_LEN = 8_000_000 // data: URLs can be large
         private const val MAX_IMAGE_JOBS = 2
         private const val MAX_BATCH_JOBS = 4
-        private const val GRACE_MS = 400L
+
+        /** native -> JS: forget failed strings/images and re-request them (see ARCHITECTURE.md). */
+        const val RETRY_JS = "window.__jdt&&(window.__jdt.retry?window.__jdt.retry():window.__jdt.rescan())"
+
+        /**
+         * The document nonce of a request id: the top frame's FRAME_ID ("f<random>_"), which
+         * prefixes its own ids and, after "R", the ids it relays for sub-frames.
+         */
+        internal fun docOf(reqId: String): String {
+            val s = if (reqId.startsWith("R")) reqId.substring(1) else reqId
+            val i = s.indexOf('_')
+            return if (i > 0) s.substring(0, i + 1) else ""
+        }
     }
 }

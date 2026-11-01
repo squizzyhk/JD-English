@@ -74,7 +74,11 @@ class ImageTranslator(private val context: Context, private val engine: Translat
         val scheme = url.substringBefore(':').lowercase()
         if (scheme != "http" && scheme != "https" && scheme != "data") return errorJson("Unsupported URL")
 
-        val engineId = try { Settings(appContext).engine } catch (e: Exception) { "mlkit" }
+        // Key by the engine that will actually run: "claude" without a key translates with ML Kit.
+        val engineId = try {
+            val st = Settings(appContext)
+            if (st.claudeReady) "claude:" + st.claudeModel else "mlkit"
+        } catch (e: Exception) { "mlkit" }
         val key = cache.key(url, engineId)
         cache.get(key)?.let { return it }
 
@@ -120,7 +124,8 @@ class ImageTranslator(private val context: Context, private val engine: Translat
         if (blocks.isEmpty()) return Result(resultJson(w, h, emptyList()), true)
 
         // 3) Translate all blocks in one batch.
-        val translations = engine.translate(blocks.map { TextItem(it.block.text, "image") })
+        val outcome = engine.translateWithInfo(blocks.map { TextItem(it.block.text, "image") })
+        val translations = outcome.values
         var missing = 0
         val out = JSONArray()
         blocks.forEachIndexed { i, c ->
@@ -138,8 +143,14 @@ class ImageTranslator(private val context: Context, private val engine: Translat
                     .put("angle", (c.block.angle * 10).roundToInt() / 10.0)
             )
         }
-        // Don't persist results where the engine wasn't ready (e.g. offline model still downloading).
-        return Result(JSONObject().put("w", w).put("h", h).put("blocks", out).toString(), missing == 0)
+        // Blocks missing because the backend couldn't run (offline model still downloading, ...):
+        // tell JS it may retry later, and don't persist. Blocks the backend answered unusably
+        // (OCR noise echoed back) are final. Claude->ML Kit fallback output isn't stored under
+        // the Claude key either.
+        val partial = missing > 0 && outcome.backendUnavailable
+        val json = JSONObject().put("w", w).put("h", h).put("blocks", out)
+        if (partial) json.put("partial", true)
+        return Result(json.toString(), !partial && !outcome.fellBack)
     }
 
     /** Returns (w, h, candidates), or null if the bytes don't decode. Recycles every bitmap it makes. */

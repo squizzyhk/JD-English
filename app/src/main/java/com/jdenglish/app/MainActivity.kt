@@ -90,6 +90,10 @@ class MainActivity : AppCompatActivity(),
     private var lastEnabled = true
     private var lastImages = true
     private var lastEngine = "mlkit"
+    private var lastClaudeKey = ""
+    private var lastClaudeModel = ""
+    /** Offline model became ready (background thread): re-request what failed meanwhile. */
+    private val modelReadyListener: () -> Unit = { if (::bridge.isInitialized) bridge.retryFailed() }
     private var rendererGone = false
 
     private var fileCallback: ValueCallback<Array<Uri>>? = null
@@ -134,6 +138,9 @@ class MainActivity : AppCompatActivity(),
         lastEnabled = settings.enabled
         lastImages = settings.images
         lastEngine = settings.engine
+        lastClaudeKey = settings.claudeKey
+        lastClaudeModel = settings.claudeModel
+        TranslationEngine.get(this).mlKit.addReadyListener(modelReadyListener)
 
         val restored = savedInstanceState?.let { webView.restoreState(it) } != null &&
             !webView.url.isNullOrEmpty()
@@ -178,6 +185,7 @@ class MainActivity : AppCompatActivity(),
         uiScope.cancel()
         fileCallback?.onReceiveValue(null)
         fileCallback = null
+        TranslationEngine.get(this).mlKit.removeReadyListener(modelReadyListener)
         if (::bridge.isInitialized) bridge.destroy()
         if (::injector.isInitialized) injector.release()
         (webView.parent as? android.view.ViewGroup)?.removeView(webView)
@@ -495,18 +503,25 @@ class MainActivity : AppCompatActivity(),
         val enabled = settings.enabled
         val images = settings.images
         val engine = settings.engine
+        val claudeKey = settings.claudeKey
+        val claudeModel = settings.claudeModel
         if (enabled != lastEnabled) {
             webView.evaluateJavascript("window.__jdt&&window.__jdt.setEnabled($enabled)", null)
         }
         if (images != lastImages) {
             webView.evaluateJavascript("window.__jdt&&window.__jdt.setImages($images)", null)
         }
-        if (engine != lastEngine && enabled) {
-            webView.evaluateJavascript(ScriptInjector.RESCAN, null)
+        val translatorChanged = engine != lastEngine ||
+            (engine == "claude" && (claudeKey != lastClaudeKey || claudeModel != lastClaudeModel))
+        if (translatorChanged && enabled) {
+            // Strings/images that failed (cached as null for this page view) get another chance.
+            webView.evaluateJavascript(TranslatorBridge.RETRY_JS, null)
         }
         lastEnabled = enabled
         lastImages = images
         lastEngine = engine
+        lastClaudeKey = claudeKey
+        lastClaudeModel = claudeModel
         updateLangToggle()
         refreshTitle()
     }

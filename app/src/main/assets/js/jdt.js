@@ -31,7 +31,7 @@
   function noop() {}
   if (!N && IS_TOP) {
     window.__jdt = {
-      onBatch: noop, onImage: noop, setEnabled: noop, setImages: noop, rescan: noop,
+      onBatch: noop, onImage: noop, setEnabled: noop, setImages: noop, rescan: noop, retry: noop,
       stats: function () { return { active: false, reason: 'no JDTNative' }; }
     };
     return;
@@ -51,8 +51,15 @@
   var BATCH_MAX = 80;
   var MAX_INFLIGHT = 4;
   var FLUSH_DELAY = 40;
+  // Soft timeouts free the in-flight slot but keep waiting for the answer (the bridge queues
+  // work, so a slow answer is normal and re-sending would duplicate paid backend calls).
+  // Only after the hard timeout are the strings re-queued / the image made requestable again.
   var REQ_TIMEOUT = 20000;
+  var REQ_HARD_TIMEOUT = 180000;
   var IMG_TIMEOUT = 45000;
+  var IMG_HARD_TIMEOUT = 240000;
+  var MAX_LATE_REQS = 500;
+  var IMG_RETRY_DELAYS = [10000, 30000];   // automatic retries of "partial" image results
   var IMG_MAX_INFLIGHT = 3;
   var MAX_STR = 4000;
   var MAX_AUTO_RETRY = 2;
@@ -88,7 +95,7 @@
   var pending = new Map();    // key -> reqId (in flight)
   var waiters = new Map();    // key -> Set<rec>
   var retries = new Map();    // key -> count of automatic retries
-  var reqs = new Map();       // reqId -> {keys, timedOut, timer}
+  var reqs = new Map();       // reqId -> {keys, timedOut, dead, timer}
   var inflight = 0;
   var seq = 0;
   var flushT = 0;
@@ -385,7 +392,7 @@
       queue.delete(batch[i].k);
       pending.set(batch[i].k, id);
     }
-    var r = { keys: keys, timedOut: false, timer: 0 };
+    var r = { keys: keys, timedOut: false, dead: false, timer: 0 };
     reqs.set(id, r);
     inflight++;
     S.batches++;
@@ -397,20 +404,34 @@
     } catch (e) {
       err('translateBatch', e);
       clearTimeout(r.timer);
-      onTimeout(id);
+      reqs.delete(id);
+      inflight--;
+      releaseKeys(keys, id);
+      if (queue.size) scheduleFlush();
     }
   }
 
+  /** Soft timeout: free the slot, keep the keys pending (no duplicate request) and keep waiting. */
   function onTimeout(id) {
     var r = reqs.get(id);
     if (!r || r.timedOut) return;
     r.timedOut = true;
     inflight--;
     S.timeouts++;
+    r.timer = setTimeout(guard('hardTimeout', function () { onHardTimeout(id); }), REQ_HARD_TIMEOUT - REQ_TIMEOUT);
+    if (queue.size) scheduleFlush();
+  }
+
+  /** Hard timeout: give the keys up for a retry; a late answer is still applied if not superseded. */
+  function onHardTimeout(id) {
+    var r = reqs.get(id);
+    if (!r || r.dead) return;
+    r.dead = true;
     releaseKeys(r.keys, id);
     if (queue.size) scheduleFlush();
-    // Keep the entry for a while so a late answer can still be applied.
-    setTimeout(function () { reqs.delete(id); }, 60000);
+    if (reqs.size > MAX_LATE_REQS) {
+      reqs.forEach(function (x, k) { if (x.dead && reqs.size > MAX_LATE_REQS) reqs.delete(k); });
+    }
   }
 
   /** Request failed without per-item answers: requeue (bounded) so it can be retried. */
@@ -754,16 +775,43 @@
     sweepBgSoon();
   }
 
+  function forgetTextFailures() {
+    cache.forEach(function (v, k) { if (v === null) cache.delete(k); });
+    retries.clear();
+    lastTitle = null;
+  }
+
   /** New page view (SPA navigation): forget failures so they get another chance. */
   function onRoute() {
     if (routeT) clearTimeout(routeT);
     routeT = setTimeout(guard('route', function () {
       routeT = 0;
-      cache.forEach(function (v, k) { if (v === null) cache.delete(k); });
-      retries.clear();
-      lastTitle = null;
+      forgetTextFailures();
       rescan();
     }), 60);
+  }
+
+  /**
+   * native -> JS: the translator changed or became available (model downloaded, Claude key
+   * added). Forget failed strings (null cache entries) and failed/partial images, and request
+   * them again. Also forwarded to sub-frames.
+   */
+  function retry() {
+    broadcast({ __jdt: 1, k: 'ctl', op: 'retry' });
+    forgetTextFailures();
+    imgTries.clear();
+    var again = [];
+    imgCache.forEach(function (e, url) {
+      if (e.st === 'done' && (!e.res || e.partial)) {
+        if (e.retryT) clearTimeout(e.retryT);
+        imgCache.delete(url);
+        e.els.forEach(function (el) { again.push(el); });
+      }
+    });
+    if (!enabled) return;
+    queueScan(document);
+    sweepBgSoon();
+    for (var i = 0; i < again.length; i++) retryImageEl(again[i]);
   }
 
   function setRootClass(cls, on) {
@@ -816,9 +864,10 @@
   var IMGST = new WeakMap();          // element -> state
   var OVOWN = new WeakMap();          // overlay -> owning element
   var imgStates = new Set();          // states that have overlays or are being watched
-  var imgCache = new Map();           // url -> {st:'pending'|'done', res, els:Set}
+  var imgCache = new Map();           // url -> {st:'queued'|'pending'|'done', res, partial, els:Set}
   var imgQ = [];                      // urls waiting to be requested
-  var imgReqs = new Map();            // reqId -> url
+  var imgReqs = new Map();            // reqId -> {url, soft, timer}
+  var imgTries = new Map();           // url -> automatic retries of partial results so far
   var imgInflight = 0;
   var io = null, ro = null;
 
@@ -899,7 +948,7 @@
   }
 
   function requestImage(st, url) {
-    if (st.ov && st.res) return;
+    if (st.ov && st.res && !st.res.partial) return;
     var e = imgCache.get(url);
     if (e && e.st === 'done') { if (e.res) renderOverlay(st, e.res); return; }
     if (!e) {
@@ -919,49 +968,76 @@
       var id = FRAME_ID + 'i' + (++seq);
       e.st = 'pending';
       e.id = id;
-      imgReqs.set(id, url);
+      var q = { url: url, soft: false, timer: 0 };
+      imgReqs.set(id, q);
       imgInflight++;
       S.imgRequested++;
-      e.timer = setTimeout(guard('imgTimeout', imgTimeoutFn(id)), IMG_TIMEOUT);
-      try { callImage(id, url); } catch (x) { err('translateImage', x); clearTimeout(e.timer); imgTimeoutFn(id)(); }
+      q.timer = setTimeout(guard('imgTimeout', imgTimeoutFn(id)), IMG_TIMEOUT);
+      try {
+        callImage(id, url);
+      } catch (x) {
+        err('translateImage', x);
+        clearTimeout(q.timer);
+        imgReqs.delete(id);
+        imgInflight--;
+        if (e.id === id) imgCache.delete(url);
+      }
     }
   }
 
+  /** Soft timeout frees the slot but keeps waiting; the hard timeout allows a new request. */
   function imgTimeoutFn(id) {
     return function () {
-      var url = imgReqs.get(id);
-      if (url == null) return;
-      imgReqs.delete(id);
-      imgInflight--;
-      var e = imgCache.get(url);
-      if (e && e.id === id) imgCache.delete(url);           // allow a retry later
+      var q = imgReqs.get(id);
+      if (!q) return;
+      if (!q.soft) {
+        q.soft = true;
+        imgInflight--;
+        q.timer = setTimeout(guard('imgHardTimeout', imgTimeoutFn(id)), IMG_HARD_TIMEOUT - IMG_TIMEOUT);
+      } else {
+        imgReqs.delete(id);
+        var e = imgCache.get(q.url);
+        if (e && e.id === id) imgCache.delete(q.url);       // allow a retry later
+      }
       pumpImages();
     };
+  }
+
+  /** Re-request an element's image after its cache entry was dropped (retry). */
+  function retryImageEl(el) {
+    var st = IMGST.get(el);
+    if (!st || !st.vis || !el.isConnected) return;
+    if (st.bg) tryBg(el); else tryImage(el);
   }
 
   function onImage(id, json) {
     id = String(id);
     if (relays.has(id)) { relayBack(id, 'ri', json); return; }
-    var url = imgReqs.get(id);
-    if (url == null) return;
+    var q = imgReqs.get(id);
+    if (!q) return;
+    var url = q.url;
     imgReqs.delete(id);
-    imgInflight--;
+    clearTimeout(q.timer);
+    if (!q.soft) imgInflight--;
     S.imgResults++;
     var e = imgCache.get(url);
-    if (e) clearTimeout(e.timer);
+    if (e && e.id !== id) e = null;                       // superseded by a newer request
     var res = parseJson(json);
     if (!res || res.error || !Array.isArray(res.blocks)) {
       S.imgErrors++;
-      if (e) { e.st = 'done'; e.res = null; e.els.clear(); }
+      // Final for this page view; retry() (native) clears it. Keep els for that.
+      if (e) { e.st = 'done'; e.res = null; }
       pumpImages();
       return;
     }
+    var partial = !!res.partial;                          // some text couldn't be translated yet
     if (!(res.w > 0 && res.h > 0) || !res.blocks.length) res = null;
     if (e) {
       e.st = 'done';
       e.res = res;
+      e.partial = partial;
       var els = e.els;
-      e.els = new Set();
+      if (!partial) e.els = new Set();                    // partial: keep them for the retry
       if (res) {
         els.forEach(function (el) {
           var st = IMGST.get(el);
@@ -970,8 +1046,21 @@
           if (cur === url) { st.url = url; renderOverlay(st, res); }
         });
       }
+      if (partial) scheduleImgRetry(url, e);
     }
     pumpImages();
+  }
+
+  /** Partial result (translator not ready yet): ask again after a back-off, a bounded number of times. */
+  function scheduleImgRetry(url, e) {
+    var n = imgTries.get(url) || 0;
+    if (n >= IMG_RETRY_DELAYS.length) return;
+    imgTries.set(url, n + 1);
+    e.retryT = setTimeout(guard('imgRetry', function () {
+      if (imgCache.get(url) !== e) return;
+      imgCache.delete(url);
+      e.els.forEach(retryImageEl);
+    }), IMG_RETRY_DELAYS[n]);
   }
 
   function onImgSrcChange(img) {
@@ -1000,6 +1089,7 @@
     var el = st.el;
     if (!el.isConnected) return;
     ensureStyle();
+    if (st.res !== res) st.key = '';      // new result (e.g. a retry of a partial one): re-layout
     st.res = res;
     if (!st.ov) {
       var ov = document.createElement('div');
@@ -1327,7 +1417,7 @@
   function tryBg(el) {
     if (!imagesOn || !enabled) return;
     var st = IMGST.get(el);
-    if (!st || !st.url || st.res) return;
+    if (!st || !st.url || (st.res && !st.res.partial)) return;
     if (st.natW) { requestImage(st, st.url); return; }
     var probe = new Image();
     var url = st.url;
@@ -1404,7 +1494,7 @@
         return;
       }
       if ((d.k !== 'batch' && d.k !== 'image') || typeof d.id !== 'string') return;
-      var nid = 'R' + (++seq);
+      var nid = 'R' + FRAME_ID + (++seq);   // nonce: never matches a relay of another document
       relays.set(nid, { src: src, id: d.id });
       setTimeout(function () { relays.delete(nid); }, 90000);
       S.relayed++;
@@ -1424,6 +1514,7 @@
       if (d.op === 'enabled') setEnabled(d.v);
       else if (d.op === 'images') setImages(d.v);
       else if (d.op === 'rescan') rescan();
+      else if (d.op === 'retry') retry();
       else if (d.op === 'cfg') {
         if (d.images !== imagesOn) setImages(d.images);
         if (d.enabled !== enabled) setEnabled(d.enabled);
@@ -1478,6 +1569,7 @@
     setEnabled: guard('setEnabled', setEnabled),
     setImages: guard('setImages', setImages),
     rescan: guard('rescan', rescan),
+    retry: guard('retry', retry),
     stats: guard('stats', stats),
     _why: guard('why', why),
     _fitRect: fitRect,

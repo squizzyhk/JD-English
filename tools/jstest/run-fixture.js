@@ -236,6 +236,11 @@ const HAN = /[㐀-鿿]/;
   check('own output never sent for translation', rq.ownOutput === 0);
   check('null result not retried in same page view', rq.nullReq === 1, rq.nullReq);
   check('batches <= 80 items', rq.maxBatch <= 80, rq.maxBatch);
+  await page.evaluate(() => window.__jdt.retry());
+  await page.waitForTimeout(300);
+  const nullAfterRetry = await page.evaluate(() => [].concat(...window.__mockLog.batches.map(b => b.items.map(i => i.t)))
+    .filter(t => t === '无法翻译的文本').length);
+  check('retry() re-requests strings that came back null', nullAfterRetry === 2, nullAfterRetry);
 
   // ---- SPA navigation --------------------------------------------------------------
   await page.evaluate(() => {

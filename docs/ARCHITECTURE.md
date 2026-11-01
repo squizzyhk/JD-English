@@ -26,13 +26,18 @@ first hit wins, per string:
    Rules may call back into the glossary for sub-parts.
 4. **Cache** (`TranslationCache`, SQLite) — previously translated strings.
 5. **Backend** — the user-selected machine translator:
-   - `MlKitBackend` (default; free, on-device; model downloads once over Wi-Fi/any network)
+   - `MlKitBackend` (default; free, on-device; model downloads once over Wi-Fi/any network).
+     The translate path never waits for a download: while the model is unavailable it
+     starts the download in the background and returns nulls; when the model becomes
+     ready the app calls `window.__jdt.retry()` so the page re-requests what failed.
    - `ClaudeBackend` (optional; user supplies an Anthropic API key in Settings;
      best quality for product titles/descriptions; batches strings into one request)
    Backend output is post-processed by `PostEditor` (fix common MT errors:
    "self-operated" → "JD Direct", "Jingdong" → "JD", "Beans" context etc.) and cached.
 
 `TextItem(text: String, ctx: String)` where ctx ∈ `ui | title | product | attr | review | image`.
+Backend cache keys: ML Kit `(mlkit, text)`; Claude `(claude:<model>, ctx + text)`, so a model
+switch refreshes and Claude output for one ctx isn't reused for another.
 Glossary and rules only apply to short strings; long product titles go to the backend
 (but the glossary is still used as a *pre-substitution* hint for ClaudeBackend).
 
@@ -50,18 +55,34 @@ JS → native (all strings; `@JavascriptInterface`):
 | `pageTitle(title)` | translated document title | updates native toolbar |
 | `log(msg)` | – | Logcat |
 
+Request ids: the top frame prefixes every id with a random per-document nonce `FRAME_ID`
+(`f<base36>_`): own batches `FRAME_ID+seq`, images `FRAME_ID+'i'+seq`, and ids it relays for
+sub-frames `'R'+FRAME_ID+seq`. Native always delivers results (the page ignores unknown ids);
+on a page change it cancels in-flight work by nonce (documents other than the one that calls
+next), never by timing.
+
 Image result JSON:
 ```
 {"w":800,"h":600,"blocks":[{"x":10,"y":20,"w":200,"h":40,"text":"Free Shipping","orig":"包邮","fg":"#FFFFFF","bg":"#E1251B","angle":0}]}
 ```
 Coordinates are in the decoded bitmap's pixel space (`w`,`h`), JS scales to the
 rendered `<img>` box (respecting `object-fit`). Empty `blocks` = nothing to do.
+`"partial":true` = some text could not be translated because the translator wasn't available
+yet (e.g. the offline model is downloading); `blocks` holds what was translated, and JS may
+request the image again later (bounded back-off, and on `retry()`).
 On error: `{"error":"..."}`.
 
 native → JS (via `evaluateJavascript`):
 - `window.__jdt && window.__jdt.setEnabled(true|false)` — false restores all originals (text, attributes, hides image overlays).
 - `window.__jdt && window.__jdt.setImages(true|false)`
 - `window.__jdt && window.__jdt.rescan()`
+- `window.__jdt && window.__jdt.retry()` — the translator changed or became available (engine,
+  Claude key/model changed; offline model finished downloading): forget strings that came back
+  null and failed/partial images for this page view, and request them again (all frames).
+
+JS timeouts are soft: after 20 s (batch) / 45 s (image) the in-flight slot is freed but the
+request keeps waiting for its answer; only after a hard timeout (180 s / 240 s) are the strings
+re-queued or the image made requestable again.
 
 ## Content script (`assets/js/jdt.js`)
 

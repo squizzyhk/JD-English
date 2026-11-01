@@ -73,7 +73,10 @@ class SettingsActivity : AppCompatActivity() {
             updateClaudeVisibility(engineList?.value)
             engineList?.setOnPreferenceChangeListener { _, newValue ->
                 updateClaudeVisibility(newValue as? String)
-                handler.post { engine.warmUp(); updateStatus() }
+                handler.post {
+                    if (newValue == "mlkit") engine.downloadModel()
+                    updateStatus()
+                }
                 true
             }
 
@@ -116,7 +119,7 @@ class SettingsActivity : AppCompatActivity() {
             }
 
             findPreference<Preference>("download_model")?.setOnPreferenceClickListener {
-                engine.warmUp()
+                engine.downloadModel()
                 Toast.makeText(ctx, R.string.toast_download_started, Toast.LENGTH_SHORT).show()
                 updateStatus()
                 true

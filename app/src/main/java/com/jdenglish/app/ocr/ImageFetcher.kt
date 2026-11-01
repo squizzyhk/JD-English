@@ -14,6 +14,9 @@ import okhttp3.Cache
 import okhttp3.CacheControl
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -51,7 +54,8 @@ internal class ImageFetcher(context: Context) {
             .header("Accept", acceptHeader())
             .header("Referer", pageUrl?.takeIf { it.startsWith("http", true) } ?: DEFAULT_REFERER)
         if (!userAgent.isNullOrBlank()) builder.header("User-Agent", userAgent)
-        cookieFor(url)?.let { builder.header("Cookie", it) }
+        // Cookies come from WebViewCookieJar, per hop: a hand-set Cookie header would be kept
+        // by OkHttp on a cross-host redirect and leak the JD session to the redirect target.
         if (cacheOnly) builder.cacheControl(CacheControl.FORCE_CACHE)
 
         val call = client.newCall(builder.build())
@@ -88,11 +92,22 @@ internal class ImageFetcher(context: Context) {
         if (Build.VERSION.SDK_INT >= 31) "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
         else "image/webp,image/apng,image/*,*/*;q=0.8"
 
-    private fun cookieFor(url: String): String? = try {
-        CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }
-    } catch (t: Throwable) {
-        // WebView provider missing/updating: fetch without cookies (CDN images rarely need them).
-        null
+    /** Read-only bridge to the WebView's cookies, evaluated for each request URL (incl. redirects). */
+    private object WebViewCookieJar : CookieJar {
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            val header = try {
+                CookieManager.getInstance().getCookie(url.toString())
+            } catch (t: Throwable) {
+                // WebView provider missing/updating: fetch without cookies (CDN images rarely need them).
+                null
+            }
+            if (header.isNullOrBlank()) return emptyList()
+            return header.split(';').mapNotNull { pair ->
+                pair.trim().takeIf { it.isNotEmpty() }?.let { Cookie.parse(url, it) }
+            }
+        }
+
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) = Unit
     }
 
     private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
@@ -122,6 +137,7 @@ internal class ImageFetcher(context: Context) {
                 .callTimeout(30, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .followSslRedirects(true)
+                .cookieJar(WebViewCookieJar)
                 .retryOnConnectionFailure(true)
                 .cache(Cache(File(appContext.cacheDir, "img-http"), HTTP_CACHE_BYTES))
                 .build()

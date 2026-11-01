@@ -10,17 +10,21 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import java.util.concurrent.CopyOnWriteArraySet
 
 /**
  * Free on-device Chinese <-> English translation (Google ML Kit). The zh model (~30 MB)
@@ -36,7 +40,10 @@ class MlKitBackend : TranslationBackend {
     @Volatile var lastError: String? = null
         private set
 
-    private val initLock = Mutex()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val jobLock = Any()
+    @Volatile private var downloadJob: Job? = null
+    private val readyListeners = CopyOnWriteArraySet<() -> Unit>()
     @Volatile private var zhEn: Translator? = null
     @Volatile private var enZh: Translator? = null
     @Volatile private var lastFailAt = 0L
@@ -62,58 +69,109 @@ class MlKitBackend : TranslationBackend {
         }
     }
 
-    /** Ensures translators exist and the model is downloaded. Returns false if unavailable. */
+    /** True when the translators exist and the model is on disk; never blocks. */
+    val isReadyNow: Boolean get() = state == ModelState.READY && zhEn != null
+
+    /** Called (on a background thread) each time the model becomes ready after a download/init. */
+    fun addReadyListener(l: () -> Unit) { readyListeners.add(l) }
+    fun removeReadyListener(l: () -> Unit) { readyListeners.remove(l) }
+
+    /**
+     * Ensures translators exist and the model is downloaded, waiting for the download if one
+     * is needed. Returns false if unavailable. Only for callers that may wait (warm-up, the
+     * explicit download button): the translate path never waits for a download (see [translate]).
+     */
     suspend fun ensureReady(): Boolean {
-        if (state == ModelState.READY && zhEn != null) return true
-        return initLock.withLock {
-            if (state == ModelState.READY && zhEn != null) return@withLock true
+        if (isReadyNow) return true
+        startDownload()?.join()
+        return isReadyNow
+    }
+
+    /**
+     * Explicit user request ("Download offline model"): skips the failure back-off and starts
+     * the download in the background if it isn't running. Non-blocking.
+     */
+    fun downloadNow() {
+        lastFailAt = 0L
+        startDownload()
+    }
+
+    /**
+     * Starts (or joins) the single background download/init job. Returns null when the model is
+     * ready or a recent failure is still backing off. Never blocks.
+     */
+    private fun startDownload(): Job? {
+        if (isReadyNow) return null
+        synchronized(jobLock) {
+            downloadJob?.let { if (it.isActive) return it }
+            if (isReadyNow) return null
             // Back off after a failure so a page full of strings doesn't hammer the download.
             if (state == ModelState.FAILED && System.currentTimeMillis() - lastFailAt < RETRY_AFTER_FAIL_MS) {
-                return@withLock false
+                return null
             }
+            state = ModelState.DOWNLOADING
+            return scope.launch { downloadAndInit() }.also { downloadJob = it }
+        }
+    }
+
+    private suspend fun downloadAndInit() {
+        try {
             val zhEnT = zhEn ?: Translation.getClient(
                 TranslatorOptions.Builder()
                     .setSourceLanguage(TranslateLanguage.CHINESE)
                     .setTargetLanguage(TranslateLanguage.ENGLISH)
                     .build()
             ).also { zhEn = it }
-            state = ModelState.DOWNLOADING
-            try {
-                val conditions = DownloadConditions.Builder().build() // any network
-                val done = withTimeoutOrNull(DOWNLOAD_TIMEOUT_MS) {
-                    zhEnT.downloadModelIfNeeded(conditions).await()
-                    true
-                }
-                if (done != true) throw IllegalStateException("download timed out")
-                if (enZh == null) {
-                    enZh = Translation.getClient(
-                        TranslatorOptions.Builder()
-                            .setSourceLanguage(TranslateLanguage.ENGLISH)
-                            .setTargetLanguage(TranslateLanguage.CHINESE)
-                            .build()
-                    )
-                }
-                state = ModelState.READY
-                lastError = null
-                Log.i(TAG, "ML Kit zh<->en model ready")
+            val conditions = DownloadConditions.Builder().build() // any network
+            val done = withTimeoutOrNull(DOWNLOAD_TIMEOUT_MS) {
+                zhEnT.downloadModelIfNeeded(conditions).await()
                 true
-            } catch (t: Throwable) {
-                if (t is kotlinx.coroutines.CancellationException) {
-                    state = ModelState.NOT_DOWNLOADED
-                    throw t
-                }
-                Log.w(TAG, "ML Kit model download failed", t)
-                state = ModelState.FAILED
-                lastFailAt = System.currentTimeMillis()
-                lastError = describeError(t)
-                false
             }
+            if (done != true) throw IllegalStateException("download timed out")
+            if (enZh == null) {
+                enZh = Translation.getClient(
+                    TranslatorOptions.Builder()
+                        .setSourceLanguage(TranslateLanguage.ENGLISH)
+                        .setTargetLanguage(TranslateLanguage.CHINESE)
+                        .build()
+                )
+            }
+            state = ModelState.READY
+            lastError = null
+            Log.i(TAG, "ML Kit zh<->en model ready")
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) {
+                state = ModelState.NOT_DOWNLOADED
+                throw t
+            }
+            Log.w(TAG, "ML Kit model download failed", t)
+            state = ModelState.FAILED
+            lastFailAt = System.currentTimeMillis()
+            lastError = describeError(t)
+            return
         }
+        for (l in readyListeners) {
+            try { l() } catch (t: Throwable) { Log.w(TAG, "ready listener failed", t) }
+        }
+    }
+
+    /**
+     * Non-blocking readiness for the translate path. If the model isn't ready, starts the
+     * download in the background and waits only briefly (enough for the model-already-on-disk
+     * case); while a download is running it returns false at once, so a pending download never
+     * stalls translation (callers get nulls and the page retries when the model is ready).
+     */
+    private suspend fun readyForTranslate(): Boolean {
+        if (isReadyNow) return true
+        val wasDownloading = state == ModelState.DOWNLOADING
+        val job = startDownload() ?: return isReadyNow
+        if (!wasDownloading) withTimeoutOrNull(QUICK_INIT_WAIT_MS) { job.join() }
+        return isReadyNow
     }
 
     override suspend fun translate(items: List<TextItem>): List<String?> {
         if (items.isEmpty()) return emptyList()
-        if (!ensureReady()) return items.map { null }
+        if (!readyForTranslate()) return items.map { null }
         val t = zhEn ?: return items.map { null }
         return coroutineScope {
             items.map { item ->
@@ -124,7 +182,7 @@ class MlKitBackend : TranslationBackend {
 
     override suspend fun translateToChinese(text: String): String? {
         if (text.isBlank()) return null
-        if (!ensureReady()) return null
+        if (!readyForTranslate()) return null
         val t = enZh ?: return null
         return try {
             parallel.withPermit { t.translate(text).await() }.trim().ifEmpty { null }
@@ -179,6 +237,7 @@ class MlKitBackend : TranslationBackend {
         private const val PARALLELISM = 4
         private const val DOWNLOAD_TIMEOUT_MS = 5 * 60_000L
         private const val RETRY_AFTER_FAIL_MS = 30_000L
+        private const val QUICK_INIT_WAIT_MS = 2_000L
     }
 }
 

@@ -42,7 +42,31 @@ class RuleEngine(private val glossaryLookup: (String) -> String?) {
         rules += Rule(pattern, fn)
     }
 
+    /** The whitespace-normalized input of the innermost [single] call on this thread. */
+    private val currentNorm = ThreadLocal<String?>()
+
+    /**
+     * Rules match the input with whitespace removed; this restores the original spacing of a Latin
+     * fragment ("THEGREATWALL" -> "THE GREAT WALL") by finding it in the uncompacted input.
+     */
+    private fun respace(latin: String): String {
+        val src = currentNorm.get() ?: return latin
+        if (latin.length < 2 || src.indexOf(latin) >= 0) return latin
+        val re = Regex(latin.map { Regex.escape(it.toString()) }.joinToString("""\s*"""))
+        return re.find(src)?.value ?: latin
+    }
+
     private fun single(norm: String): String? {
+        val prevNorm = currentNorm.get()
+        currentNorm.set(norm)
+        try {
+            return singleImpl(norm)
+        } finally {
+            currentNorm.set(prevNorm)
+        }
+    }
+
+    private fun singleImpl(norm: String): String? {
         val compact = norm.replace(WS, "")
         if (compact.isEmpty()) return null
         for (r in rules) {
@@ -346,9 +370,18 @@ class RuleEngine(private val glossaryLookup: (String) -> String?) {
         val b = raw.trim()
         if (b.isEmpty()) return null
         if (!Cjk.hasHan(b)) return b
-        Regex("""(.*?)\(([A-Za-z0-9&.\- ']+)\)""").matchEntire(b)?.let { return it.groupValues[2].trim() }
+        Regex("""(.*?)\(([A-Za-z0-9&.\- ']+)\)""").matchEntire(b)?.let { return respace(it.groupValues[2].trim()) }
         term(b)?.let { return it }
         Regex("""([A-Za-z0-9&.\- ']+)(?:产品|品牌|官方|中国)?""").matchEntire(b)?.let { return it.groupValues[1].trim() }
+        // "品胜(PISEN)车载电器" -> "PISEN Car Electronics"; "3M个人防护" -> "3M Personal Protection".
+        // An unknown line-of-business tail is dropped rather than left in Chinese.
+        Regex("""(?:.*?)\(([A-Za-z0-9&.\- ']+)\)(.+)|([A-Za-z0-9&.\-']+)(\p{IsHan}.*)""").matchEntire(b)?.let { m ->
+            val latin = respace((m.groupValues[1].ifEmpty { m.groupValues[3] }).trim())
+            val tail = m.groupValues[2].ifEmpty { m.groupValues[4] }.trim()
+            if (latin.isEmpty()) return@let
+            val t = term(tail) ?: segment(tail)
+            return if (t != null) "$latin $t" else latin
+        }
         Regex("""(.+?)(?:产品|品牌|官方|集团|中国)""").matchEntire(b)?.let { m -> term(m.groupValues[1])?.let { return it } }
         return segment(b)
     }
@@ -468,7 +501,7 @@ class RuleEngine(private val glossaryLookup: (String) -> String?) {
         rule("""(?:开店|开店时长)?(\d+)年(?:老店|店铺)""") { g -> "${g[1]}-year-old store" }
 
         // ---- Store names: "小米京东自营旗舰店" -> "Xiaomi JD Direct Flagship Store"
-        rule("""(.{1,20}?)(京东自营旗舰店|京东自营官方旗舰店|自营旗舰店|官方旗舰店|京东自营专区|旗舰店|专卖店|专营店|官方店|自营店|品牌店|海外旗舰店|海外专营店)(?:\((\d+)\))?(已退店|已关店)?""") { g ->
+        rule("""(.{1,20}?)(京东自营旗舰店|京东自营官方旗舰店|自营旗舰店|官方旗舰店|京东自营专区|旗舰店|专卖店|专营店|官方店|自营店|品牌店|海外旗舰店|海外专营店)(?:\((\d+)\)|\d{1,3})?(已退店|已关店)?""") { g ->
             val brand = storeBrand(g[1]) ?: return@rule null
             val kind = STORE_KIND[g[2]] ?: return@rule null
             "$brand $kind" + (if (g[4].isNotEmpty()) " (Closed)" else "")
@@ -480,7 +513,12 @@ class RuleEngine(private val glossaryLookup: (String) -> String?) {
         rule("""(?:第|No\.?|NO\.?)(\d+)名""") { g -> "No. ${g[1]}" }
         rule("""(?:排名|排行)(?:第)?(\d+)(?:名|位)?""") { g -> "Ranked #${g[1]}" }
         rule("""(.{2,14}?)(?:第|TOP|Top|top|No\.?|NO\.?)(\d+)(?:名|位)?""") { g ->
-            val t = term(g[1]) ?: segment(g[1]) ?: return@rule null
+            // "固态硬盘好评榜" -> "Top-Rated SSDs" rather than "SSDs Top Rated".
+            val lead = if (term(g[1]) == null) RANK_LEAD.entries.firstOrNull { g[1].endsWith(it.key) && g[1].length > it.key.length } else null
+            val t = if (lead != null) {
+                (term(g[1].dropLast(lead.key.length)) ?: segment(g[1].dropLast(lead.key.length)))?.let { "${lead.value} $it" }
+            } else null
+                ?: term(g[1]) ?: segment(g[1]) ?: return@rule null
             "No. ${g[2]} in $t"
         }
         rule("""(?:入选|上榜|荣登)(.{2,12})""") { g ->
@@ -837,6 +875,11 @@ class RuleEngine(private val glossaryLookup: (String) -> String?) {
         private val PRICE_VALUE2 = Regex("""(\d[\d,]*(?:\.\d+)?)([万亿千]?)元""")
         private val COUNT_VALUE = Regex("""(\d[\d,]*(?:\.\d+)?)([万亿千]?)(\+?)(%|件|个|台|瓶|袋|盒|箱|包|片|支|只|套|双|克|斤|千克|公斤|毫升|升|米|厘米|英寸|寸|岁|天|小时|分钟|年|个月|人)?""")
         private val LATIN_VALUE = Regex("""\d+(?:\.\d+)?[a-zA-Z]{1,4}""")
+
+        /** Ranking-list suffixes that read better as a leading adjective ("Top-Rated SSDs"). */
+        private val RANK_LEAD: Map<String, String> = mapOf(
+            "好评榜" to "Top-Rated", "人气榜" to "Most Popular", "口碑榜" to "Most Recommended", "回购榜" to "Most Repurchased",
+        )
 
         /** A few words that rules reference even when the glossary lacks them. */
         private val BUILTIN: Map<String, String> = mapOf(

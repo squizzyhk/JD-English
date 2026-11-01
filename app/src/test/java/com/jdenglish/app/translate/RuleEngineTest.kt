@@ -271,5 +271,12 @@ class RuleEngineTest {
         assertEquals("Flash Sale Price ¥99", e.apply("秒杀价¥99"))
         assertEquals("Huawei Mate 60 Pro 12GB+512GB Yachuan Green", e.apply("华为 Mate 60 Pro 12GB+512GB 雅川青"))
         assertEquals("1699 (Reservation Required), Single Bottle, 1 pc", e.apply("1699(需预约)，单瓶装，1个"))
+        // Store names: Latin brand in parentheses / Latin prefix plus a line-of-business tail.
+        assertEquals("PISEN Car Electronics JD Direct Flagship Store", e.apply("品胜（PISEN）车载电器京东自营旗舰店"))
+        assertEquals("3M Personal Protection JD Direct Flagship Store", e.apply("3M个人防护京东自营旗舰店01"))
+        assertEquals("SATA Hardware & Tools JD Direct Zone", e.apply("世达（SATA）五金工具京东自营专区"))
+        assertEquals("FUJIFILM JD Direct Flagship Store", e.apply("富士（FUJIFILM）京东自营旗舰店"))
+        assertEquals("THE GREAT WALL Hardware & Tools JD Direct Flagship Store", e.apply("长城（THE GREAT WALL）五金工具京东自营旗舰店"))
+        assertEquals("No. 15 in Top-Rated SSDs", e.apply("固态硬盘好评榜第15名"))
     }
 }

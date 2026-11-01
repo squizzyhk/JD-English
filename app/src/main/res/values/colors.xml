@@ -1,0 +1,14 @@
+<resources>
+    <color name="jd_red">#E1251B</color>
+    <color name="jd_red_dark">#B81C14</color>
+    <color name="jd_red_light">#FDECEB</color>
+    <color name="white">#FFFFFF</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="text_primary">#1A1A1A</color>
+    <color name="text_secondary">#666666</color>
+    <color name="text_hint">#999999</color>
+    <color name="divider">#E6E6E6</color>
+    <color name="search_field">#F2F2F2</color>
+    <color name="nav_inactive">#666666</color>
+    <color name="ic_launcher_background">#E1251B</color>
+</resources>

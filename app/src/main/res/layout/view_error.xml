@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/surface"
+    android:clickable="true"
+    android:focusable="true"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="32dp">
+
+    <ImageView
+        android:layout_width="72dp"
+        android:layout_height="72dp"
+        android:importantForAccessibility="no"
+        android:src="@drawable/ic_error_offline" />
+
+    <TextView
+        android:id="@+id/error_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:gravity="center"
+        android:text="@string/error_title_generic"
+        android:textAppearance="?attr/textAppearanceTitleLarge"
+        android:textColor="@color/text_primary" />
+
+    <TextView
+        android:id="@+id/error_message"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:text="@string/error_msg_generic"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        android:textColor="@color/text_secondary" />
+
+    <TextView
+        android:id="@+id/error_details"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="@color/text_hint" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/error_retry"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:minWidth="160dp"
+        android:text="@string/retry"
+        app:backgroundTint="@color/jd_red" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/error_home"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/go_home"
+        android:textColor="@color/jd_red" />
+</LinearLayout>
